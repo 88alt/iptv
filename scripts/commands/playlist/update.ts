@@ -1,9 +1,9 @@
 import { isURI, getStreamInfo, loadIssues } from '../../utils'
+import { STREAMS_DIR, LOGS_DIR } from '../../constants'
 import { Playlist, Issue, Stream } from '../../models'
 import { loadData, data as apiData } from '../../api'
 import { Logger, Collection } from '@freearhey/core'
 import { Storage } from '@freearhey/storage-js'
-import { STREAMS_DIR } from '../../constants'
 import { PlaylistParser } from '../../core'
 import * as sdk from '@iptv-org/sdk'
 
@@ -12,50 +12,60 @@ const processedIssues = new Collection()
 async function main() {
   const logger = new Logger({ level: -999 })
 
-  logger.info('loading issues...')
-  const issues = await loadIssues()
-
   logger.info('loading data from api...')
   await loadData()
 
+  logger.info('loading issues...')
+  const issues = await loadIssues()
+
   logger.info('loading streams...')
-  const streamsStorage = new Storage(STREAMS_DIR)
-  const parser = new PlaylistParser({
-    storage: streamsStorage
-  })
-  const files = await streamsStorage.list('**/*.m3u')
-  const streams = await parser.parse(files)
+  const streams = await loadStreams()
 
   logger.info('removing streams...')
   await removeStreams({ streams, issues })
 
   logger.info('edit stream description...')
-  await editStreams({
-    streams,
-    issues
-  })
+  await editStreams({ streams, issues })
 
   logger.info('add new streams...')
-  await addStreams({
-    streams,
-    issues
-  })
+  await addStreams({ streams, issues })
 
-  logger.info('saving...')
-  const groupedStreams = streams.groupBy((stream: Stream) => stream.getFilepath())
-  for (const filepath of groupedStreams.keys()) {
-    let streams = new Collection(groupedStreams.get(filepath))
-    streams = streams.filter((stream: Stream) => stream.removed === false)
+  logger.info('saving streams...')
+  await saveStreams({ streams })
 
-    const playlist = new Playlist(streams, { public: false })
-    await streamsStorage.save(filepath, playlist.toString())
-  }
-
-  const output = processedIssues.map(issue_number => `closes #${issue_number}`).join(', ')
-  console.log(`OUTPUT=${output}`)
+  logger.info('saving logs...')
+  await saveLogs()
 }
 
 main()
+
+async function saveLogs() {
+  const logStorage = new Storage(LOGS_DIR)
+  const output = processedIssues.map((issue: Issue) => `closes #${issue.number}`).join(', ')
+  await logStorage.save('playlist_update.log', output)
+}
+
+async function saveStreams({ streams }) {
+  const streamsStorage = new Storage(STREAMS_DIR)
+  const groupedStreams = streams.groupBy((stream: Stream) => stream.getFilepath())
+  for (const filepath of groupedStreams.keys()) {
+    let filteredStreams = new Collection<Stream>(groupedStreams.get(filepath))
+    filteredStreams = filteredStreams.filter((stream: Stream) => stream.removed === false)
+
+    const playlist = new Playlist(filteredStreams, { public: false })
+    await streamsStorage.save(filepath, playlist.toString())
+  }
+}
+
+async function loadStreams() {
+  const streamsStorage = new Storage(STREAMS_DIR)
+  const parser = new PlaylistParser({
+    storage: streamsStorage
+  })
+  const files = await streamsStorage.list('**/*.m3u')
+
+  return await parser.parse(files)
+}
 
 async function removeStreams({
   streams,
@@ -86,7 +96,7 @@ async function removeStreams({
         }
       })
 
-    if (changed) processedIssues.add(issue.number)
+    if (changed) processedIssues.add(issue)
   })
 }
 
@@ -121,7 +131,7 @@ async function editStreams({
 
     stream.updateWithIssue(data)
 
-    processedIssues.add(issue.number)
+    processedIssues.add(issue)
   })
 }
 
@@ -181,6 +191,6 @@ async function addStreams({
     stream.updateTitle().updateFilepath()
 
     streams.add(stream)
-    processedIssues.add(issue.number)
+    processedIssues.add(issue)
   }
 }
